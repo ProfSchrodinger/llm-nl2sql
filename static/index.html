@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL2SQL Query Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        select, textarea, input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color .2s;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #refreshBtn {
+            background-color: #6c757d;
+        }
+        #refreshBtn:hover {
+            background-color: #5a6268;
+        }
+        .danger-btn {
+            background-color: #dc3545;
+        }
+        .danger-btn:hover {
+            background-color: #c82333;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        #result {
+            white-space: pre-wrap;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 100px;
+        }
+        /* Ensure long prompt text stays within the container */
+        #schemaContent,
+        #promptDisplay {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            padding: 15px;
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>NL2SQL Query Interface</h1>
+    
+    <div class="section">
+        <h2>Database Management</h2>
+        <div class="input-group">
+            <label for="dbFile">Upload SQLite Database:</label>
+            <input type="file" id="dbFile" accept=".sqlite">
+            <button id="uploadBtn">Upload Database</button>
+            <div id="uploadStatus" class="status"></div>
+        </div>
+        <div class="input-group">
+            <label for="dbSelect">Select Database:</label>
+            <select id="dbSelect">
+                <option value="">-- Select a database --</option>
+            </select>
+            <button id="refreshBtn">Refresh List</button>
+        </div>
+        <!-- Schema viewer -->
+        <div id="schemaDisplay" class="section" style="display: none;">
+            <h3>Schema for <span id="selectedDbName"></span></h3>
+            <pre id="schemaContent"></pre>
+            <button id="deleteBtn" class="danger-btn">Delete Database</button>
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2>Generate SQL Query</h2>
+        <div>
+            <label for="question">Enter your question:</label>
+            <textarea id="question" rows="4" placeholder="e.g., What is the average age of all teachers?"></textarea>
+        </div>
+        <button id="generateBtn">Generate SQL</button>
+        <div id="queryStatus" class="status"></div>
+    </div>
+    
+    <div class="section">
+        <h2>SQL Result</h2>
+        <pre id="result">SQL query will appear here...</pre>
+    </div>
+
+    <div class="section">
+        <h2>Model Prompt</h2>
+        <pre id="promptDisplay">The prompt sent to the model will appear here...</pre>
+    </div>
+
+    <script>
+        // DOM Elements
+        const dbFileInput = document.getElementById('dbFile');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const dbSelect = document.getElementById('dbSelect');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const questionInput = document.getElementById('question');
+        const generateBtn = document.getElementById('generateBtn');
+        const queryStatus = document.getElementById('queryStatus');
+        const resultDisplay = document.getElementById('result');
+        const promptDisplay = document.getElementById('promptDisplay');
+        const deleteBtn = document.getElementById('deleteBtn');
+
+        // Load databases on page load
+        document.addEventListener('DOMContentLoaded', loadDatabases);
+
+        // Event Listeners
+        uploadBtn.addEventListener('click', uploadDatabase);
+        refreshBtn.addEventListener('click', loadDatabases);
+        generateBtn.addEventListener('click', generateSQL);
+        dbSelect.addEventListener('change', displaySchema);
+        deleteBtn.addEventListener('click', deleteSelectedDatabase);
+
+        // Functions
+        async function uploadDatabase() {
+            const file = dbFileInput.files[0];
+            if (!file) {
+                uploadStatus.textContent = 'Please select a file first.';
+                return;
+            }
+            
+            if (!file.name.endsWith('.sqlite')) {
+                uploadStatus.textContent = 'Only .sqlite files are allowed.';
+                return;
+            }
+            
+            uploadStatus.textContent = 'Uploading...';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/upload-db', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    uploadStatus.textContent = `Database "${data.db_id}" uploaded successfully!`;
+                    loadDatabases();
+                } else {
+                    uploadStatus.textContent = data.error || 'Upload failed.';
+                }
+            } catch (error) {
+                uploadStatus.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        async function loadDatabases() {
+            try {
+                const response = await fetch('/databases');
+                const databases = await response.json();
+
+                /* Replace the entire innerHTML to avoid stale / ghost options.
+                   This forces the browser to re-render the dropdown fully. */
+                let optionsHtml = '<option value="">-- Select a database --</option>';
+                databases.forEach(db => {
+                    optionsHtml += `<option value="${db}">${db}</option>`;
+                });
+                dbSelect.innerHTML = optionsHtml;
+
+                if (databases.length === 0) {
+                    uploadStatus.textContent = 'No databases available. Please upload one.';
+                } else {
+                    uploadStatus.textContent = `${databases.length} database(s) available.`;
+                }
+            } catch (error) {
+                uploadStatus.textContent = 'Error loading databases: ' + error.message;
+            }
+        }
+
+        // Fetch and display schema for selected database
+        async function displaySchema() {
+            const selectedDb = dbSelect.value;
+            const schemaDisplay = document.getElementById('schemaDisplay');
+            const schemaContent = document.getElementById('schemaContent');
+            const selectedDbName = document.getElementById('selectedDbName');
+
+            if (!selectedDb) {
+                schemaDisplay.style.display = 'none';
+                return;
+            }
+
+            schemaDisplay.style.display = 'block';
+            selectedDbName.textContent = selectedDb;
+            schemaContent.textContent = 'Loading schema...';
+
+            try {
+                const response = await fetch(`/database/${selectedDb}`);
+                const data = await response.json();
+
+                if (response.ok) {
+                    schemaContent.textContent = data.schema;
+                } else {
+                    schemaContent.textContent = `Error: ${data.error}`;
+                }
+            } catch (error) {
+                schemaContent.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        async function deleteSelectedDatabase() {
+            const selectedDb = dbSelect.value;
+            if (!selectedDb) {
+                alert('Please select a database to delete.');
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to permanently delete the "${selectedDb}" database?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/database/${selectedDb}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message);
+                    // Refresh the list and hide the schema display
+                    loadDatabases();
+                    document.getElementById('schemaDisplay').style.display = 'none';
+                } else {
+                    alert(`Error: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+        
+        async function generateSQL() {
+            const question = questionInput.value.trim();
+            const selectedDb = dbSelect.value;
+            
+            if (!question) {
+                queryStatus.textContent = 'Please enter a question.';
+                return;
+            }
+            
+            queryStatus.textContent = 'Generating SQL...';
+            resultDisplay.textContent = 'Working on it...';
+            promptDisplay.textContent = 'Generating prompt...';
+            
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        question: question,
+                        db_id: selectedDb || undefined  // If no db selected, let RAG find it
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultDisplay.textContent = data.sql;
+                    queryStatus.textContent = 'SQL generated successfully!';
+                    promptDisplay.textContent = data.prompt || 'Prompt unavailable.';
+                    
+                    if (!selectedDb && data.db_id) {
+                        queryStatus.textContent += ` (Using database: ${data.db_id})`;
+                        // Auto-select the database in the dropdown
+                        for (let i = 0; i < dbSelect.options.length; i++) {
+                            if (dbSelect.options[i].value === data.db_id) {
+                                dbSelect.selectedIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    resultDisplay.textContent = data.error || 'Failed to generate SQL.';
+                    queryStatus.textContent = 'Error occurred.';
+                    promptDisplay.textContent = '';
+                }
+            } catch (error) {
+                resultDisplay.textContent = 'Error: ' + error.message;
+                queryStatus.textContent = 'Request failed.';
+                promptDisplay.textContent = '';
+            }
+        }
+    </script>
+</body>
+</html>
