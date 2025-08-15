@@ -1,0 +1,6 @@
+academic
+restaurants
+scholar
+yelp
+imdb
+geo
